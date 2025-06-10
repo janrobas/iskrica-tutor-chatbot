@@ -1,0 +1,8 @@
+[
+  {
+    "name": "api1",
+    "pswd": "$2b$12$h/7PK6R7GeOocwpc/7.bx.4ApJrabaCXZrmITpgNmXbDH7NXwPiF.",
+    "salt": "c232eee6898d4e90285a02f8be025607",
+    "mode": "generic"
+  }
+]

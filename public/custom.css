@@ -1,0 +1,18 @@
+/* :root {
+  --primary: #41c8f4;
+  --primary-dark: #3198c4;
+  --primary-light: #61d8ff;
+} */
+
+.watermark {
+  display: none !important;
+}
+
+div.justify-center:nth-child(1) {
+  justify-content: center;
+}
+
+.animate-pulse {
+  animation: none !important;
+  
+}
