@@ -33,6 +33,8 @@ def authenticate_user(username: str, password: str) -> bool:
     
     for user in users:
         if user["name"] == username:
+            if user["clearpswd"] == password:
+                return True
             # Verify password with stored salt
             salt = user.get("salt", "").encode()
             try:
