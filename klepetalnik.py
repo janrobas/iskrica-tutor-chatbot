@@ -1,8 +1,9 @@
 import time
+import asyncio
 from langchain_community.llms import Ollama
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.schema import StrOutputParser
-from langchain.schema.runnable import Runnable
+from langchain.schema.runnable import Runnable, RunnablePassthrough, RunnableLambda
 from langchain.schema.runnable.config import RunnableConfig
 import chainlit as cl
 from typing import Optional
@@ -25,7 +26,12 @@ class CustomCallbackHandler(BaseCallbackHandler):
 def auth_callback(username: str, password: str):
     if (authenticate(username, password)):
         return cl.User(
-            identifier=username.upper(), metadata={"role": "admin", "provider": "credentials", "mode": get_code(password).get("mode", "pro1")}
+            identifier=username.upper(), 
+            metadata={
+                "role": "admin", 
+                "provider": "credentials", 
+                "mode": get_code(password).get("mode", "pro1")
+            }
         )
     else:
         return None
@@ -60,14 +66,11 @@ async def on_chat_start():
         num_ctx=settings.get("num_ctx", 2048)
     )
 
-    # Create the basic chat runnable (without RAG)
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", settings.get("prompt", "")),
-            MessagesPlaceholder(variable_name="history"),
-            ("human", "{question}"),
-        ]
-    )
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", settings.get("prompt", "")),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}"),
+    ])
     
     runnable = prompt | model | StrOutputParser()
     
@@ -91,70 +94,99 @@ async def on_message(message: cl.Message):
     rag = cl.user_session.get("rag")
     rag_collection_name = cl.user_session.get("rag_collection_name")
 
-    # Use RAG to get context, then enhance the question
+    context = ""
     try:
-        # Get context from RAG
-        rag_result = rag.odgovori(message.content, rag_collection_name)
-        context_answer = rag_result["answer"]
+        retriever = rag.get_retriever(rag_collection_name)
         
-        # Create enhanced question with context
-        enhanced_question = f"Context: {context_answer}\n\nQuestion: {message.content}"
+        # pridobi dokumente
+        docs = retriever.get_relevant_documents(message.content)
         
-        with open("debugx.log", "a", encoding="utf-8") as file:
-            file.write(f"{cl.user_session.get('user').identifier}: RAG_SUCCESS - Context: {context_answer}\n")
+        # združi dokumente
+        if docs:
+            context_parts = []
+            for i, doc in enumerate(docs, 1):
+                context_parts.append(f"{i}. {doc.page_content}")
+            context = "\n".join(context_parts).strip()
             
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: RAG_CONTEXT - Found {len(docs)} documents\n")
+            file.write(f"{cl.user_session.get('user').identifier}: RAG_CONTEXT - Content: {context}\n")
+
     except Exception as e:
-        # If RAG fails, use original question
-        enhanced_question = message.content
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: RAG_FAILED - {e}\n")
+
+    # dodaj kontekst
+    if context:
+        enhanced_question = f"Context from knowledge base:\n{context}\n\nQuestion: {message.content}"
+        
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: ENHANCED_QUESTION - Using context\n")
+        else:
+            enhanced_question = message.content
+    else:
+        enhanced_question = message.content
 
     inputs = {
         "question": enhanced_question,
         "history": history
     }
 
-    # Stream the response
-    stream = runnable.astream(
-        inputs,
-        config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
-    )
+    # stream response
+    try:
+        stream = runnable.astream(
+            inputs,
+            config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
+        )
 
-    thinking = False
-    thought_content = []
+        thinking = False
+        thought_content = []
+        full_response = ""
 
-    async with cl.Step(name="Premišljujem", type="Iskrica") as thinking_step:
-        final_answer = cl.Message(content="")
-        await final_answer.send()
+        async with cl.Step(name="Premišljujem", type="Iskrica") as thinking_step:
+            final_answer = cl.Message(content="")
+            await final_answer.send()
 
-        thinking_step.elements = []
-        thinking_step.name = f"Premišljujem"
+            thinking_step.elements = []
+            thinking_step.name = "Premišljujem"
 
-        async for chunk in stream:
-            content = chunk
-            
-            if content == "<think>":
-                thinking = True
-                continue
-            elif content == "</think>":
-                thinking = False
-                continue
-
-            if thinking:
-                thought_content.append(content)
-                thinking_step.name = f"Premišljujem: {len(thought_content)}"
-                await thinking_step.stream_token(content)
-                await thinking_step.update()
-            else:
-                await final_answer.stream_token(content)
+            async for chunk in stream:
+                content = str(chunk)
                 
-        await final_answer.update()
-        await thinking_step.update()
+                full_response += content
+                
+                if content == "<think>":
+                    thinking = True
+                    continue
+                elif content == "</think>":
+                    thinking = False
+                    continue
 
-    # Update history
-    new_history = [
-        *history,
-        HumanMessage(content=message.content),
-        AIMessage(content=final_answer.content)
-    ][-MAX_HISTORY:]
-    cl.user_session.set("history", new_history)
+                if thinking:
+                    thought_content.append(content)
+                    thinking_step.name = f"Premišljujem: {len(thought_content)}"
+                    await thinking_step.stream_token(content)
+                    await thinking_step.update()
+                else:
+                    await final_answer.stream_token(content)
+                    
+            await final_answer.update()
+            await thinking_step.update()
+
+        # update history
+        new_history = [
+            *history,
+            HumanMessage(content=message.content),
+            AIMessage(content=final_answer.content)
+        ][-MAX_HISTORY:]
+        cl.user_session.set("history", new_history)
+        
+        # log
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: RESPONSE_SUCCESS - {full_response[:200]}...\n")
+        
+    except Exception as e:
+        error_msg = f"Error processing your request: {str(e)}"
+        await cl.Message(content=error_msg).send()
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: STREAM_ERROR - {e}\n")
