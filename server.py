@@ -19,7 +19,7 @@ import hashlib
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from passlib.hash import bcrypt
-from auth import authenticate_user
+from auth import authenticate
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 from threading import Lock
@@ -122,7 +122,7 @@ async def ask_ollama(request: OllamaRequest):
     #    return {"error": "invalid token"}
     # Session ID handling
 
-    if (not authenticate_user(request.user, request.password)):
+    if (not authenticate(request.user, request.password)):
         return { "error": "Auth epic fail" }
 
     session_id = str(uuid.uuid4())
@@ -189,7 +189,7 @@ async def ask_ollama(request: OllamaRequest):
 
 @app.post("/prompt-simple")
 async def ask_ollama_simple(request: OllamaRequest):
-    if not authenticate_user(request.user, request.password):
+    if not authenticate(request.user, request.password):
         return {"error": "Authentication failed"}
     
     session_id = request.session_id or str(uuid.uuid4())

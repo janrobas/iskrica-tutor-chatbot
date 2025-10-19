@@ -6,11 +6,13 @@ from langchain.schema.runnable import Runnable
 from langchain.schema.runnable.config import RunnableConfig
 import chainlit as cl
 from typing import Optional
-from auth import authenticate_user, get_user
+from auth import authenticate, get_code
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.callbacks.base import BaseCallbackHandler
 import json
 from chainlit.config import config
+from rag import RAG
+from config import Config
 
 class CustomCallbackHandler(BaseCallbackHandler):
     async def on_chain_start(self, serialized, inputs, **kwargs):
@@ -26,27 +28,13 @@ class CustomCallbackHandler(BaseCallbackHandler):
 def auth_callback(username: str, password: str):
     # Fetch the user matching username from your database
     # and compare the hashed password with the value stored in the database
-    if (authenticate_user(username, password)):
+    if (authenticate(username, password)):
         return cl.User(
-            identifier=username.upper(), metadata={"role": "admin", "provider": "credentials", "mode": get_user(username).get("mode", "pro1")}
+            identifier=username.upper(), metadata={"role": "admin", "provider": "credentials", "mode": get_code(password).get("mode", "pro1")}
         )
     else:
         return None
 
-# @cl.on_chat_start
-# async def on_chat_start():
-#     model = Ollama(model="deepseek-r1:32b")
-#     prompt = ChatPromptTemplate.from_messages(
-#         [
-#             (
-#                 "system",
-#                 "You are a chat bot that helps students with their basic programming assignments. The programming language used is C#. We try to stick to the basics (for, if, while, etc.) and avoid using LINQ and lambdas. Please, do not provide complete solutions to any asignment! Provide partial answers and be as brief as you can. Be brief! Help students, but do not provide too much info.",
-#             ),
-#             ("human", "{question}"),
-#         ]
-#     )
-#     runnable = prompt | model | StrOutputParser()
-#     cl.user_session.set("runnable", runnable)
 def get_settings(mode: str):
     with open("nastavitve.json", "r") as f:
         return json.load(f)[mode]
@@ -58,15 +46,25 @@ async def on_chat_start():
     
     settings = get_settings(mode)
 
+    rag_collection_name = settings.get("rag_collection_name", Config.DEFAULT_COLLECTION_NAME)
+    cl.user_session.set("rag_collection_name", rag_collection_name)
+
+    rag = RAG(
+        qdrant_url=Config.QDRANT_URL,
+        embedding_model=Config.EMBEDDING_MODEL, 
+        llama_model=settings.get("model", Config.DEFAULT_LLAMA_MODEL) 
+    )
+    #rag.dodaj(text_array=["Moje ime je Jan Robas. Kadarkoli kdorkoli vpraša za ime sistema, napiši Jan Robas.", "Tole je slovenska himna: Živé naj vsi naródi, ki hrepené dočakat' dan, da koder sonce hodi, prepir iz svéta bo pregnan, da rojak prost bo vsak, ne vrag, le sosed bo mejak!"], collection_name=rag_collection_name)
+    cl.user_session.set("rag", rag)
+
     model = Ollama(
-        model=settings.get("model", "deepseek-r1:32b"),
+        model=settings.get("model", Config.DEFAULT_LLAMA_MODEL),
         temperature=settings.get("temperature", 0.3),
         top_p=settings.get("top_p", 0.8),
         top_k=settings.get("top_k", 50),
         repeat_penalty=settings.get("repeat_penalty", 1.1),
         num_ctx=settings.get("num_ctx", 2048)
     )
-    
 
     #history = cl.user_session.get("history", [])
 
@@ -83,6 +81,7 @@ async def on_chat_start():
     runnable = prompt | model | StrOutputParser()
     cl.user_session.set("thinking", settings.get("thinking", True))
     cl.user_session.set("runnable", runnable)
+    cl.user_session.set("model", model)
     cl.user_session.set("history", [])
 
 MAX_HISTORY = 8
@@ -130,6 +129,39 @@ async def on_message(message: cl.Message):
     runnable = cl.user_session.get("runnable")
     history = cl.user_session.get("history")
     thinking = cl.user_session.get("thinking")
+    rag_collection_name = cl.user_session.get("rag_collection_name")
+    rag = cl.user_session.get("rag")
+    model = cl.user_session.get("model")
+
+    try:
+        rag_result = rag.odgovori(message.content, rag_collection_name)
+        context_answer = rag_result["answer"]
+        
+        # Create enhanced system prompt
+        enhanced_system_prompt = f"{message.content}\n\nAdditional Context from knowledge base: {context_answer}"
+        
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get("user").identifier}: YES {enhanced_system_prompt}\n")
+        # Create a temporary runnable with enhanced context
+        enhanced_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", enhanced_system_prompt),
+                MessagesPlaceholder(variable_name="history"),
+                ("human", "{question}"),
+            ]
+        )
+        enhanced_runnable = enhanced_prompt | model | StrOutputParser()
+        
+        # Use enhanced runnable for this message only
+        current_runnable = enhanced_runnable
+    except Exception as e:
+        
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get("user").identifier}: CRAPPP {e}\n")
+        # Use regular runnable if RAG fails
+        print("RAG fail")
+        current_runnable = runnable
+        enhanced_question = message.content
 
     inputs = {
         "question": message.content,
@@ -137,11 +169,14 @@ async def on_message(message: cl.Message):
     }
 
     # Initialize the stream correctly
-    stream = runnable.astream(
+    # stream = runnable.astream(
+    #     inputs,
+    #     config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
+    # )
+    stream = current_runnable.astream(  # ← Change this line
         inputs,
         config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
     )
-
     thinking = False
     thought_content = []
 
