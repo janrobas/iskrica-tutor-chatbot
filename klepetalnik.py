@@ -122,8 +122,6 @@ async def on_message(message: cl.Message):
         
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: ENHANCED_QUESTION - Using context\n")
-        else:
-            enhanced_question = message.content
     else:
         enhanced_question = message.content
 
