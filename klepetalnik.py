@@ -63,11 +63,12 @@ async def on_chat_start():
         top_p=settings.get("top_p", 0.8),
         top_k=settings.get("top_k", 50),
         repeat_penalty=settings.get("repeat_penalty", 1.1),
-        num_ctx=settings.get("num_ctx", 2048)
+        num_ctx=settings.get("num_ctx", 2048),
+        timeout=120.0
     )
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", settings.get("prompt", "")),
+        ("system", settings.get("prompt", "") + "\n\nTrenutno vprašanje uporabnika je zadnje sporočilo v pogovoru! Odgovori na to vprašanje."),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ])
@@ -118,8 +119,8 @@ async def on_message(message: cl.Message):
 
     # dodaj kontekst
     if context:
-        enhanced_question = f"Context from knowledge base:\n{context}\n\nQuestion: {message.content}"
-        
+        enhanced_question = f"Please use the following context to answer the question. If the context is not relevant, use your own knowledge.\n\nContext:\n{context}\n\nQuestion: {message.content}"
+
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: ENHANCED_QUESTION - Using context\n")
     else:
