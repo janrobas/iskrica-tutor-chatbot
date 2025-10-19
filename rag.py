@@ -34,14 +34,18 @@ class RAG:
         )
         print("Documents added successfully!")
 
-    def get_chain(self, collection_name):
-        """Create and return a retrieval chain for the given collection"""
+    def get_retriever(self, collection_name):
         qDrant_vector = QdrantVectorStore.from_existing_collection(
             collection_name=collection_name, 
             url=self.qdrant_url,
             embedding=self.embeddings
         )
         retriever = qDrant_vector.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+        return retriever
+
+    def get_chain(self, collection_name):
+        """Create and return a retrieval chain for the given collection"""
+        retriever = self.get_retriever(collection_name)
 
         prompt_template = """
         1. Use the context to answer the question.

@@ -16,18 +16,13 @@ from config import Config
 
 class CustomCallbackHandler(BaseCallbackHandler):
     async def on_chain_start(self, serialized, inputs, **kwargs):
-        # Override to prevent default "using Ollama" message
         pass
 
     async def on_llm_start(self, serialized, prompts, **kwargs):
-        # Optional: Add custom loading message if needed
-        #await cl.Message(content="Hmmm...").send()
         pass
 
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
-    # Fetch the user matching username from your database
-    # and compare the hashed password with the value stored in the database
     if (authenticate(username, password)):
         return cl.User(
             identifier=username.upper(), metadata={"role": "admin", "provider": "credentials", "mode": get_code(password).get("mode", "pro1")}
@@ -42,7 +37,7 @@ def get_settings(mode: str):
 @cl.on_chat_start
 async def on_chat_start():
     user = cl.user_session.get("user")
-    mode = user.metadata.get("mode", "default")  # Add default fallback if needed
+    mode = user.metadata.get("mode", "default")  
     
     settings = get_settings(mode)
 
@@ -52,9 +47,8 @@ async def on_chat_start():
     rag = RAG(
         qdrant_url=Config.QDRANT_URL,
         embedding_model=Config.EMBEDDING_MODEL, 
-        llama_model=settings.get("model", Config.DEFAULT_LLAMA_MODEL) 
+        llama_model=settings.get("model", Config.DEFAULT_LLAMA_MODEL),
     )
-    #rag.dodaj(text_array=["Moje ime je Jan Robas. Kadarkoli kdorkoli vpraša za ime sistema, napiši Jan Robas.", "Tole je slovenska himna: Živé naj vsi naródi, ki hrepené dočakat' dan, da koder sonce hodi, prepir iz svéta bo pregnan, da rojak prost bo vsak, ne vrag, le sosed bo mejak!"], collection_name=rag_collection_name)
     cl.user_session.set("rag", rag)
 
     model = Ollama(
@@ -66,58 +60,23 @@ async def on_chat_start():
         num_ctx=settings.get("num_ctx", 2048)
     )
 
-    #history = cl.user_session.get("history", [])
-
+    # Create the basic chat runnable (without RAG)
     prompt = ChatPromptTemplate.from_messages(
         [
-            (
-                "system",
-                settings.get("prompt", "")
-            ),
+            ("system", settings.get("prompt", "")),
             MessagesPlaceholder(variable_name="history"),
             ("human", "{question}"),
         ]
     )
+    
     runnable = prompt | model | StrOutputParser()
+    
     cl.user_session.set("thinking", settings.get("thinking", True))
     cl.user_session.set("runnable", runnable)
     cl.user_session.set("model", model)
     cl.user_session.set("history", [])
 
 MAX_HISTORY = 8
-#@cl.on_message
-async def on_message(message: cl.Message):
-    # config = {"configurable": {"thread_id": cl.context.session.id}}
-
-    with open("debugx.log", "a", encoding="utf-8") as file:
-        file.write(f"{cl.user_session.get("user").identifier}: {message.content}\n")
-
-    runnable = cl.user_session.get("runnable")
-    history = cl.user_session.get("history")
-
-    msg = cl.Message(content="")
-
-    inputs = {
-        "question": message.content,
-        "history": history
-    }
-
-    async for chunk in runnable.astream(
-        # {"question": message.content},
-        inputs,
-        config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
-    ):
-        await msg.stream_token(chunk)
-
-    await msg.send()
-
-    new_history = [
-        *history,
-        HumanMessage(content=message.content),
-        AIMessage(content=msg.content)
-    ][-MAX_HISTORY:]
-    cl.user_session.set("history", new_history)
-#https://github.com/Chainlit/cookbook/blob/main/deepseek-r1/ollama.py
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -129,70 +88,46 @@ async def on_message(message: cl.Message):
     runnable = cl.user_session.get("runnable")
     history = cl.user_session.get("history")
     thinking = cl.user_session.get("thinking")
-    rag_collection_name = cl.user_session.get("rag_collection_name")
     rag = cl.user_session.get("rag")
-    model = cl.user_session.get("model")
+    rag_collection_name = cl.user_session.get("rag_collection_name")
 
+    # Use RAG to get context, then enhance the question
     try:
+        # Get context from RAG
         rag_result = rag.odgovori(message.content, rag_collection_name)
         context_answer = rag_result["answer"]
         
-        # Create enhanced system prompt
-        enhanced_system_prompt = f"{message.content}\n\nAdditional Context from knowledge base: {context_answer}"
+        # Create enhanced question with context
+        enhanced_question = f"Context: {context_answer}\n\nQuestion: {message.content}"
         
         with open("debugx.log", "a", encoding="utf-8") as file:
-            file.write(f"{cl.user_session.get("user").identifier}: YES {enhanced_system_prompt}\n")
-        # Create a temporary runnable with enhanced context
-        enhanced_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", enhanced_system_prompt),
-                MessagesPlaceholder(variable_name="history"),
-                ("human", "{question}"),
-            ]
-        )
-        enhanced_runnable = enhanced_prompt | model | StrOutputParser()
-        
-        # Use enhanced runnable for this message only
-        current_runnable = enhanced_runnable
+            file.write(f"{cl.user_session.get('user').identifier}: RAG_SUCCESS - Context: {context_answer}\n")
+            
     except Exception as e:
-        
-        with open("debugx.log", "a", encoding="utf-8") as file:
-            file.write(f"{cl.user_session.get("user").identifier}: CRAPPP {e}\n")
-        # Use regular runnable if RAG fails
-        print("RAG fail")
-        current_runnable = runnable
+        # If RAG fails, use original question
         enhanced_question = message.content
+        with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: RAG_FAILED - {e}\n")
 
     inputs = {
-        "question": message.content,
+        "question": enhanced_question,
         "history": history
     }
 
-    # Initialize the stream correctly
-    # stream = runnable.astream(
-    #     inputs,
-    #     config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
-    # )
-    stream = current_runnable.astream(  # ← Change this line
+    # Stream the response
+    stream = runnable.astream(
         inputs,
         config=RunnableConfig(callbacks=[CustomCallbackHandler()]),
     )
+
     thinking = False
     thought_content = []
 
     async with cl.Step(name="Premišljujem", type="Iskrica") as thinking_step:
-    #async with cl.Step(name="Thinking", type="llm") as thinking_step:
         final_answer = cl.Message(content="")
         await final_answer.send()
 
-        # Style the thinking indicator
-        thinking_step.elements = [
-            # cl.Text(
-            #     content="Processing...",
-            #     display="inline",
-            #     style="color: #666; font-size: 0.9em; font-style: italic;"
-            # )
-        ]
+        thinking_step.elements = []
         thinking_step.name = f"Premišljujem"
 
         async for chunk in stream:
