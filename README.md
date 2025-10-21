@@ -2,6 +2,8 @@
 
 An intelligent chatbot system that combines RAG (Retrieval-Augmented Generation) with smart conversation history compression to provide personalized programming tutoring.
 This is a project in vocational school that enables us to create custom chatbots for students and run them locally.
+At this point, this is quite a mess with some parts coded manually and some parts partially vibe coded with so much back-and-forth that it was probably not worth it.
+In the future, I hope to clean this up a bit to make it more useful for everybody else. I think the smart history compressor makes a lot of sense and this is something that is worth researching.
 
 ## Prerequisites
 
