@@ -32,7 +32,13 @@ cp .env.sample .env
 # Edit .env with your settings
 ```
 
-4. **Run the chatbot:**
+4. **Create vector collections:**
+```bash
+python .\update_rag.py .\docs\programiranje1.json programiranje
+python .\update_rag.py .\docs\vss.json vss
+```
+
+5. **Run the chatbot:**
 ```bash
 chainlit run klepetalnik.py
 ```

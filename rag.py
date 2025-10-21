@@ -11,7 +11,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 class RAG:
     def __init__(self, qdrant_url, embedding_model, llama_model):
         self.qdrant_url = qdrant_url
-        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model, model_kwargs={'device': 'cpu'})
+        #self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model, model_kwargs={'device': 'cpu'})
+        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model, model_kwargs={})
         self.llm = OllamaLLM(model=llama_model)
 
     def split_text_into_chunks(self, texts):
@@ -77,4 +78,3 @@ class RAG:
         chain = self.get_chain(collection_name)
         res = chain.invoke({"input": question})
         return {"answer": res["answer"]}
-
