@@ -14,6 +14,7 @@ import json
 from chainlit.config import config
 from rag import RAG
 from config import Config
+from history_compressor import SmartHistoryCompressor
 
 class CustomCallbackHandler(BaseCallbackHandler):
     async def on_chain_start(self, serialized, inputs, **kwargs):
@@ -57,6 +58,7 @@ async def on_chat_start():
     )
     cl.user_session.set("rag", rag)
 
+    # Main model for responses
     model = Ollama(
         model=settings.get("model", Config.DEFAULT_LLAMA_MODEL),
         temperature=settings.get("temperature", 0.3),
@@ -67,8 +69,33 @@ async def on_chat_start():
         timeout=120.0
     )
 
+    # Separate model for compression (smaller & faster)
+    compression_model = Ollama(
+        model="llama3.1:8b",  # Smaller model for compression
+        temperature=0.1,      # Lower temperature for consistent summaries
+        top_p=0.9,
+        top_k=40,
+        repeat_penalty=1.0,
+        num_ctx=1024,         # Smaller context for summaries
+        timeout=30.0          # Shorter timeout for compression
+    )
+
+    # Initialize smart history compressor
+    history_compressor = SmartHistoryCompressor(
+        compression_model=compression_model,
+        max_raw_history=3,
+        compression_threshold=3,
+        compression_batch_size=3
+    )
+    cl.user_session.set("history_compressor", history_compressor)
+
     prompt = ChatPromptTemplate.from_messages([
-        ("system", settings.get("prompt", "") + "\n\nTrenutno vprašanje uporabnika je zadnje sporočilo v pogovoru! Odgovori na to vprašanje."),
+        (
+            "system", 
+            settings.get("prompt", "") + 
+            "\n\nConversation Context - what we have talked about:\n{conversation_context}\n\n" +
+            "Trenutno vprašanje uporabnika je zadnje sporočilo v pogovoru! Odgovori na to vprašanje."
+        ),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ])
@@ -78,9 +105,7 @@ async def on_chat_start():
     cl.user_session.set("thinking", settings.get("thinking", True))
     cl.user_session.set("runnable", runnable)
     cl.user_session.set("model", model)
-    cl.user_session.set("history", [])
-
-MAX_HISTORY = 8
+    cl.user_session.set("compression_model", compression_model)
 
 @cl.on_message
 async def on_message(message: cl.Message):
@@ -90,19 +115,20 @@ async def on_message(message: cl.Message):
         file.write(f"{cl.user_session.get('user').identifier}: {message.content}\n")
 
     runnable = cl.user_session.get("runnable")
-    history = cl.user_session.get("history")
     thinking = cl.user_session.get("thinking")
     rag = cl.user_session.get("rag")
     rag_collection_name = cl.user_session.get("rag_collection_name")
+    history_compressor = cl.user_session.get("history_compressor")
 
+    # Get RAG context
     context = ""
     try:
         retriever = rag.get_retriever(rag_collection_name)
         
-        # pridobi dokumente
+        # Get documents
         docs = retriever.get_relevant_documents(message.content)
         
-        # združi dokumente
+        # Combine documents
         if docs:
             context_parts = []
             for i, doc in enumerate(docs, 1):
@@ -111,27 +137,40 @@ async def on_message(message: cl.Message):
             
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: RAG_CONTEXT - Found {len(docs)} documents\n")
-            file.write(f"{cl.user_session.get('user').identifier}: RAG_CONTEXT - Content: {context}\n")
 
     except Exception as e:
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: RAG_FAILED - {e}\n")
 
-    # dodaj kontekst
+    # Add context to question
     if context:
-        enhanced_question = f"Please use the following context to answer the question. If the context is not relevant, use your own knowledge.\n\nContext:\n{context}\n\nQuestion: {message.content}"
+        enhanced_question = f"Please use the following context to answer the question. If the context is not relevant, use your own knowledge. Context is automatically added - do not mention the context in the answer, it would confuse the user.\n\nContext:\n{context}\n\nQuestion: {message.content}"
 
         with open("debugx.log", "a", encoding="utf-8") as file:
             file.write(f"{cl.user_session.get('user').identifier}: ENHANCED_QUESTION - Using context\n")
     else:
         enhanced_question = message.content
 
+    # Get conversation context from compressor
+    conversation_context = history_compressor.get_conversation_context()
+    message_history = history_compressor.get_message_history()
+
+    # Log current conversation state for debugging
+    with open("debugx.log", "a", encoding="utf-8") as file:
+        stats = history_compressor.get_stats()
+        file.write(f"{cl.user_session.get('user').identifier}: CONV_STATS - {stats}\n")
+        if history_compressor.raw_history:
+            last_question = history_compressor.raw_history[-1]["question"][:100]
+            file.write(f"{cl.user_session.get('user').identifier}: LAST_QUESTION - {last_question}...\n")
+            file.write(f"{cl.user_session.get('user').identifier}: CONTEXT - {conversation_context}...\n")
+
     inputs = {
         "question": enhanced_question,
-        "history": history
+        "history": message_history,
+        "conversation_context": conversation_context
     }
 
-    # stream response
+    # Stream response
     try:
         stream = runnable.astream(
             inputs,
@@ -142,17 +181,21 @@ async def on_message(message: cl.Message):
         thought_content = []
         full_response = ""
 
+
         async with cl.Step(name="Premišljujem", type="Iskrica") as thinking_step:
             final_answer = cl.Message(content="")
             await final_answer.send()
 
             thinking_step.elements = []
-            thinking_step.name = "Premišljujem"
+            thinking_step.name = f"Premišljujem"
 
             async for chunk in stream:
-                content = str(chunk)
-                
-                full_response += content
+                # Handle both string output and dict output from different chain types
+                if isinstance(chunk, dict):
+                    # For retrieval chain, extract the answer
+                    content = chunk.get("answer", str(chunk))
+                else:
+                    content = chunk
                 
                 if content == "<think>":
                     thinking = True
@@ -172,16 +215,13 @@ async def on_message(message: cl.Message):
             await final_answer.update()
             await thinking_step.update()
 
-        # update history
-        new_history = [
-            *history,
-            HumanMessage(content=message.content),
-            AIMessage(content=final_answer.content)
-        ][-MAX_HISTORY:]
-        cl.user_session.set("history", new_history)
+        # Update history compressor with new exchange (ASYNC CALL)
+        await history_compressor.add_exchange(message.content, final_answer.content)
         
-        # log
+        # Log updated statistics
+        updated_stats = history_compressor.get_stats()
         with open("debugx.log", "a", encoding="utf-8") as file:
+            file.write(f"{cl.user_session.get('user').identifier}: UPDATED_STATS - {updated_stats}\n")
             file.write(f"{cl.user_session.get('user').identifier}: RESPONSE_SUCCESS - {full_response[:200]}...\n")
         
     except Exception as e:
