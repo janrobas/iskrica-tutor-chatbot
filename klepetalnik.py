@@ -83,7 +83,7 @@ async def on_chat_start():
     # Initialize smart history compressor
     history_compressor = SmartHistoryCompressor(
         compression_model=compression_model,
-        max_raw_history=3,
+        max_raw_history=settings.get("max_raw_history", 10),
         compression_threshold=3,
         compression_batch_size=3
     )
