@@ -93,7 +93,7 @@ async def on_chat_start():
         (
             "system", 
             settings.get("prompt", "") + 
-            "\n\nConversation Context - what we have talked about:\n{conversation_context}\n\n" +
+            "\n\nConversation Context - what we have talked about before:\n{conversation_context}\n\n" +
             "Trenutno vprašanje uporabnika je zadnje sporočilo v pogovoru! Odgovori na to vprašanje."
         ),
         MessagesPlaceholder(variable_name="history"),
@@ -151,7 +151,6 @@ async def on_message(message: cl.Message):
     else:
         enhanced_question = message.content
 
-    # Get conversation context from compressor
     conversation_context = history_compressor.get_conversation_context()
     message_history = history_compressor.get_message_history()
 
@@ -159,10 +158,12 @@ async def on_message(message: cl.Message):
     with open("debugx.log", "a", encoding="utf-8") as file:
         stats = history_compressor.get_stats()
         file.write(f"{cl.user_session.get('user').identifier}: CONV_STATS - {stats}\n")
+        file.write(f"{cl.user_session.get('user').identifier}: MESSAGE_HISTORY_COUNT - {len(message_history)} messages\n")
         if history_compressor.raw_history:
-            last_question = history_compressor.raw_history[-1]["question"][:100]
-            file.write(f"{cl.user_session.get('user').identifier}: LAST_QUESTION - {last_question}...\n")
-            file.write(f"{cl.user_session.get('user').identifier}: CONTEXT - {conversation_context}...\n")
+            for i, exchange in enumerate(history_compressor.raw_history):
+                status = "pending" if exchange['pending'] else "active"
+                file.write(f"{cl.user_session.get('user').identifier}: RAW_HISTORY_{i}_{status} - Q: {exchange['question'][:50]}...\n")
+        file.write(f"{cl.user_session.get('user').identifier}: CONTEXT - {conversation_context}\n")
 
     inputs = {
         "question": enhanced_question,
@@ -180,7 +181,6 @@ async def on_message(message: cl.Message):
         thinking = False
         thought_content = []
         full_response = ""
-
 
         async with cl.Step(name="Premišljujem", type="Iskrica") as thinking_step:
             final_answer = cl.Message(content="")
@@ -210,6 +210,7 @@ async def on_message(message: cl.Message):
                     await thinking_step.stream_token(content)
                     await thinking_step.update()
                 else:
+                    full_response += content
                     await final_answer.stream_token(content)
                     
             await final_answer.update()

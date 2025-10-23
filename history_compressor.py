@@ -94,7 +94,7 @@ class SmartHistoryCompressor:
         conversation_text = ""
         for i, ex in enumerate(exchanges):
             conversation_text += f"Question {i+1}: {ex['question']}\n"
-            conversation_text += f"Answer {i+1}: {ex['answer'][:200]}{'...' if len(ex['answer']) > 200 else ''}\n\n"
+            conversation_text += f"Answer {i+1}: {ex['answer'][:300]}{'...' if len(ex['answer']) > 300 else ''}\n\n"
         
         # Create prompt that includes previous compressed history for context
         if self.compressed_history:
@@ -108,17 +108,17 @@ class SmartHistoryCompressor:
             1. Preserves the key information from the previous summary
             2. Incorporates the new exchanges
             3. Maintains continuity and context
-            4. Is concise but informative (2-3 sentences)
+            4. Is concise but informative (2-4 sentences)
             
             Updated summary:
             """
         else:
             prompt = f"""
-            Create a concise summary (2-3 sentences) of these exchanges:
+            Create a concise summary (2-4 sentences) of these exchanges:
             
             {conversation_text}
             
-            Focus on the main topics, questions, and key information discussed.
+            Focus on the main topic, questions, and key information discussed.
             
             Summary:
             """
@@ -143,15 +143,12 @@ class SmartHistoryCompressor:
         return "\n".join(context_parts) if context_parts else "No previous conversation."
     
     def get_message_history(self) -> List[BaseMessage]:
-        """Get recent message history for MessagesPlaceholder - includes all non-pending raw history"""
+        """Get recent message history for MessagesPlaceholder - includes all raw history"""
         messages = []
         
-        # Only include non-pending exchanges in message history
-        # This ensures we don't include exchanges that are about to be compressed
         for exchange in self.raw_history:
-            if not exchange['pending'] and not exchange['compressing']:
-                messages.append(HumanMessage(content=exchange["question"]))
-                messages.append(AIMessage(content=exchange["answer"]))
+            messages.append(HumanMessage(content=exchange["question"]))
+            messages.append(AIMessage(content=exchange["answer"]))
         
         return messages
     
